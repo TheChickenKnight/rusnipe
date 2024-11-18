@@ -4,7 +4,7 @@ this is a WIP, I feel like an archaeologist finding ancient ruins
 
 # What I know so far:
 classes.rutgers.edu/soc/courses.gz?term=1&year=2025&campus=NB
-## Paramaters
+## Parameters
 ### Term
 *int 1-4*
 The given term in year. goes Spring, Summer, Fall, Winter from 1 to 4.
