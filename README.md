@@ -14,3 +14,5 @@ The year of classes
 ### Campus
 *String*
 I only care about New Brunswick so we're using "NB"
+## Format
+The api returns a compressed .gz containing a no extension file which is a JSON.
