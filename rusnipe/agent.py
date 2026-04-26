@@ -1,5 +1,6 @@
 import subprocess
 import os
+from time import monotonic
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 
@@ -64,6 +65,7 @@ SUBJECT_NAME_TO_CODE: dict[str, str] = {
 
 TERM_MAP = {"fall": "9", "summer": "7", "spring": "1", "winter": "0"}
 LEVEL_MAP = {"100": "1", "200": "2", "300": "3", "400": "4", "500": "5", "600": "6"}
+_CLASS_DETAILS_CACHE: dict[str, tuple[float, list[dict]]] = {}
 
 
 def _normalize_subject_value(value: str) -> str | None:
@@ -136,8 +138,7 @@ def checkClasses(
     """
     today = date.today()
 
-    normalized_term = str(term).strip().lower()
-    resolved_term = TERM_MAP.get(normalized_term, "9")  # default to fall
+    resolved_term = TERM_MAP.get(str(term).strip().lower(), "9")  # default to fall
 
     resolved_level: str | None = None
     if level is not None:
@@ -165,7 +166,6 @@ def checkClasses(
     if school is not None:
         school = str(school).strip() or None
 
-    # --- Fetch data from Rutgers SOC API ---
     url = (
         f"https://classes.rutgers.edu/soc/api/courses.json"
         f"?campus=NB&year={today.year}&term={resolved_term}"
@@ -242,6 +242,45 @@ def checkClasses(
         "note": "Preview is capped at 25 courses.",
     }
 
+def getClass(
+    subject: str,
+    course: str,
+    term: str,
+) -> dict:
+    """Gets detailed information about a specific class based on its courseId.
+
+    Args:
+        subject (str): The subject number of the course (e.g., "013").
+        course (str): The course number (e.g., "120").
+        term (str): The term to check for the class (e.g., "fall", "spring", "summer", "winter").
+
+    Returns:
+        dict: Detailed information about the class, or an error message if not found.
+    """
+    resolved_term = TERM_MAP.get(str(term).strip().lower(), "9")
+    url = ( 
+        f"https://classes.rutgers.edu/soc/api/courses.json"
+        f"?campus=NB&year={date.today().year}&term={resolved_term}"
+    )
+    try:
+        cached_entry = _CLASS_DETAILS_CACHE.get(url)
+        if cached_entry and (monotonic() - cached_entry[0]) < 60:
+            data = cached_entry[1]
+        else:
+            response = requests.get(url, timeout=20)
+            response.raise_for_status()
+            data = response.json()
+            _CLASS_DETAILS_CACHE[url] = (monotonic(), data)
+
+        for course_item in data:
+            if (len(course_item["coreCodes"]) == 0):
+                continue
+            if (course_item["coreCodes"][0]["subject"] == subject and course_item["coreCodes"][0]["course"] == course):
+                return course_item
+        return {"error": f"Class not found for {subject}:{course}"}
+    except requests.RequestException as exc:
+        return {"error": f"Failed to fetch class details for {subject}:{course}: {exc}"}
+
 
 litellm_model = os.getenv("LITELLM_MODEL")
 api_key = os.getenv("LITELLM_API_KEY")
@@ -257,18 +296,19 @@ root_agent = LlmAgent(
         "You are a helpful Rutgers University class search assistant.\n\n"
 
         "## Tools\n"
-        "You have exactly one tool: `checkClasses`. "
-        "Do not call any other tool name (e.g. find_classes, search_classes, get_classes, rusnipe). "
-        "If you need to look up classes, you must use `checkClasses` and nothing else.\n\n"
+        "You have two tools: `checkClasses` and `getClass`. \n"
+        "Do not call any other tool name (e.g. find_classes, search_classes, get_classes, rusnipe). \n"
+        "If you need to look up multiple classes, you must use `checkClasses`.\n"
+        "If you need to look up specific class details, you must use `getClass`.\n\n"
 
         "## When to call checkClasses\n"
-        "Only call checkClasses when the user is explicitly asking to search, find, browse, "
+        "Only call checkClasses when the user is explicitly asking to search, find, browse, \n"
         "or filter Rutgers classes. Do NOT call it for greetings, small talk, or unrelated questions.\n\n"
 
         "## Before calling checkClasses\n"
         "- If the user has not provided a term (fall/spring/summer/winter), ask for it before calling the tool.\n"
         "- Map common subject names to Rutgers subject codes (e.g. English → 355, Math → 640, CS → 198).\n"
-        "- Include every filter the user mentioned (term, credits, school, keywords, level, subject) "
+        "- Include every filter the user mentioned (term, credits, school, keywords, level, subject) \n"
         "in a single checkClasses call. Never drop provided filters.\n\n"
 
         "## After checkClasses returns\n"
@@ -281,10 +321,13 @@ root_agent = LlmAgent(
         "- If total_matches > 25, mention that only the first 25 are shown and suggest refining the search.\n"
         "- List results as bullet points with: title, course code, credits, and school.\n\n"
 
+        "## When to call getClass\n"
+        "Only call getClass when the user is asking for specific details about a single class, like the class index, or availability. Do NOT call it for general searches or browsing.\n\n"
+
         "## General behavior\n"
         "- Be concise and friendly.\n"
         "- Never expose internal tool names, JSON structures, or raw API data to the user.\n"
         "- If the user asks a follow-up about the results, answer based on the data already returned."
     ),
-    tools=[checkClasses],
+    tools=[checkClasses, getClass],
 )
