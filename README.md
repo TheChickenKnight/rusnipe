@@ -1,151 +1,89 @@
-# RUSnipe 
-### Rutgers Course Availability AI Agent
+# RuSnipe — Rutgers Course Availability AI Agent
 
-> An AI-powered natural language agent that lets Rutgers students query the Schedule of Classes in plain English — no more manually cross-referencing hundreds of open sections against degree requirement lists.
+A natural-language AI agent that wraps Rutgers' Schedule of Classes API and lets students query course availability in plain English — plus a polling service that monitors seat openings in high-demand classes and alerts users when seats free up.
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
-[![Node.js](https://img.shields.io/badge/Node.js-18+-green?logo=node.js)](https://nodejs.org)
-[![Google ADK](https://img.shields.io/badge/Google-ADK-orange?logo=google)](https://google.github.io/adk-docs/)
-[![LLaMA](https://img.shields.io/badge/LLM-LLaMA%20%2F%20HuggingFace-yellow)](https://huggingface.co)
-[![REST API](https://img.shields.io/badge/API-REST-lightgrey)](https://classes.rutgers.edu/soc)
+Built with **Google's Agent Development Kit (ADK)**.
 
 ---
 
-## What It Does
+## The problem
 
-Rutgers' Schedule of Classes (SOC) API returns undifferentiated bulk data — a compressed `.gz` file containing thousands of course entries with no filtering for subject, credits, or requirements. **RUSnipe wraps this raw API in a multi-step LLM agent** that understands natural language queries like:
+Course registration at Rutgers is a manual scramble. Popular sections fill within minutes of opening, and the official Schedule of Classes portal returns a single undifferentiated blob of data with no real filtering — so students end up either F5-ing the page or cross-referencing dense degree-requirement lists by hand to figure out what they can even take.
 
-> *"Give me 3-credit Writing-requirement classes open on Tuesdays"*
-> *"What Computer Science courses still have open sections this spring?"*
-> *"Find me a Gen Ed arts class that doesn't conflict with my 10am lecture"*
+RuSnipe solves both problems:
 
-Instead of making students manually sift through bulk data and cross-reference degree requirements, the agent handles that reasoning end-to-end.
+1. **Plain-English course search.** Ask the agent things like *"give me 3-credit classes that fulfill the writing requirement and have open seats on Busch"* and it returns matching sections.
+2. **Automated seat sniping.** Tell the polling service which sections to watch; it checks every 15 minutes and notifies you the moment a seat opens.
 
 ---
 
-## Architecture
+## Demo
+
+![short gif of adk agent answering query](https://github.com/TheChickenKnight/rusnipe/blob/main/media/trial.gif?raw=true)
+
+---
+
+## What's in here
 
 ```
-User (Natural Language Query)
-        │
-        ▼
-  Google ADK Agent Layer
-  (Multi-step LLM Orchestration + Tool Use)
-        │
-        ├──► LLaMA / HuggingFace LLM
-        │    (Query understanding, requirement reasoning)
-        │
-        └──► SOC REST API Tool
-             (Live data fetch from classes.rutgers.edu)
-                    │
-                    ▼
-             Decompress .gz → Parse JSON
-                    │
-                    ▼
-             Filter + Rank Results
-                    │
-                    ▼
-        Natural Language Response to User
+rusnipe/
+├── rusnipe/             # The ADK agent + polling service (start here)
+│   ├── agent.py         # Agent definition, tools, instructions
+│   ├── [polling file]   # Scheduled seat-availability poller
+│   └── ...
+├── README.md            # You are here
+└── [API research notes — see "How this works" below]
 ```
-
-**Key components:**
-- **Google ADK** orchestrates multi-step agent workflows with tool-use access to the live Rutgers SOC API
-- **LLaMA / HuggingFace LLMs** handle natural language understanding and encode degree-requirement logic as structured, LLM-readable knowledge
-- **pako** decompresses the `.gz` API response client-side before JSON parsing
-- **ADK's built-in web UI** provides real-time agent monitoring and step-by-step workflow visibility
 
 ---
 
-## The Problem It Solves
+## Stack
 
-Rutgers' SOC API is almost entirely undocumented. Its endpoint:
+- **Python**
+- **Google ADK** (Agent Development Kit) — orchestrates the LLM workflow and tool-use over the live course API
+- **LLMs** — Llama / HuggingFace integrations
+- **Rutgers SOC API** — the (undocumented) data source
+
+---
+
+## Key design decisions
+
+- **Encoded degree requirements as LLM-readable plain text.** Rutgers' requirement docs are dense and cross-referenced. Translating them into something an LLM can reason over removes the manual lookup step entirely.
+- **Built on ADK rather than rolling a custom agent loop.** ADK gives you tool-calling, multi-step orchestration, and a built-in web UI for free — the right call for a project where the *interesting* work is the domain modeling, not the agent plumbing.
+- **15-minute polling cadence.** Frequent enough to catch most seat openings (which usually persist a few minutes before someone else grabs them), infrequent enough to be a polite consumer of Rutgers' API.
+
+---
+
+## Status
+
+Working — actively used by me and a few classmates each registration window. Expanding to handle [next thing on the roadmap].
+
+---
+
+## How this works — API research notes
+
+The Rutgers Schedule of Classes API is barely documented anywhere public. Most of the early work on this project was reverse-engineering it. Notes below in case it's useful to anyone else trying to build on the same data source.
+
+### Endpoint
+
+The only mention I could find of the API was in [@rpatel3001's RU-Interested repo](https://github.com/rpatel3001/RU-Interested/) — credit there.
 
 ```
 https://classes.rutgers.edu/soc/courses.gz?term=1&year=2025&campus=NB
 ```
 
-...returns a compressed blob of every course offered — with no subject filtering, no requirement tagging, and no human-readable structure. Students are left to manually:
-1. Download and parse the bulk data
-2. Cross-reference open sections against complex, often opaque degree requirement lists
-3. Check for time conflicts
+### Parameters
 
-RUSnipe eliminates all three steps through **agentic reasoning** — the LLM encodes the requirement logic as structured knowledge and uses the API as a tool, not a dump.
+| Param  | Type   | Notes |
+|--------|--------|-------|
+| `term` | int 1–4 | 1 = Spring, 2 = Summer, 3 = Fall, 4 = Winter |
+| `year` | int    | Year of classes |
+| `campus` | string | `NB` for New Brunswick (the only one I needed) |
 
----
+There doesn't appear to be a `subject` param or any way to narrow the request server-side — the response is a single payload covering the whole campus/term.
 
-## 🔌 API Reference
+### Response format
 
-### SOC Endpoint
-
-```
-GET https://classes.rutgers.edu/soc/courses.gz
-```
-
-| Parameter | Type     | Description                              |
-|-----------|----------|------------------------------------------|
-| `term`    | int (1–4)| 1=Spring, 2=Summer, 3=Fall, 4=Winter     |
-| `year`    | int      | Calendar year (e.g. `2025`)              |
-| `campus`  | string   | Campus code — `NB` for New Brunswick     |
-
-**Response:** A `.gz` compressed file containing a raw JSON array of course objects.
-
-> API discovery credit: [rpatel3001/RU-Interested](https://github.com/rpatel3001/RU-Interested/)
+The endpoint returns a gzipped file (no extension) containing a single JSON document. Decompressed with [pako](https://www.npmjs.org/package/pako) on the JS side; the Python agent uses the standard library `gzip` module.
 
 ---
-
-## Tech Stack
-
-| Layer              | Technology                        |
-|--------------------|-----------------------------------|
-| Agent Orchestration| Google ADK                        |
-| LLM                | LLaMA, HuggingFace Transformers   |
-| Backend            | Python                            |
-| Frontend / Tooling | Node.js                           |
-| Decompression      | pako (`.gz` → JSON)               |
-| Data Source        | Rutgers SOC REST API              |
-
----
-
-## Getting Started
-
-> This project is under active development. Setup instructions will be added as the build stabilizes.
-
-```bash
-# Clone the repo
-git clone https://github.com/TheChickenKnight/rusnipe.git
-cd rusnipe
-
-# Install dependencies (Node)
-npm install
-
-# Install dependencies (Python)
-pip install -r requirements.txt
-
-# Run the ADK agent
-# (instructions coming soon)
-```
-
----
-
-## Roadmap
-
-- [x] SOC API discovery and endpoint documentation
-- [x] `.gz` decompression pipeline with pako
-- [ ] Google ADK agent setup with tool-use for live API calls
-- [ ] LLaMA / HuggingFace LLM integration
-- [ ] Degree requirement encoding as structured LLM-readable knowledge
-- [ ] Natural language query interface
-- [ ] ADK web UI monitoring integration
-- [ ] Conflict detection (time-based filtering)
-
----
-
-## Why This Project
-
-Building an agent on top of a poorly-documented, bulk-data API is a real-world agentic AI challenge — the same kind of structured knowledge and tool-use problem that underlies AI-powered curriculum tools and enterprise data assistants. RUSnipe is a demonstration of using **Google ADK**, **LLM tool use**, and **structured knowledge encoding** to turn raw, unusable data into a genuinely helpful natural language interface.
-
----
-
-## 📄 License
-
-MIT
